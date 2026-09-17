@@ -1242,7 +1242,6 @@
   const SYNC_POLL_MS = 2 * 60 * 1000;
   let syncPushInFlight = false;
   let syncPushQueued = false;
-  let syncPullInFlight = false;
 
   function syncConfigured() { return !!(meta.syncToken && meta.repoOwner && meta.repoName); }
 
@@ -1316,38 +1315,41 @@
     }
   }
 
+  let syncPullPromise = null;
   async function syncPull(opts) {
     opts = opts || {};
     if (!syncConfigured()) { if (opts.manual) showToast("Not connected yet"); return; }
-    if (syncPullInFlight) return;
-    syncPullInFlight = true;
-    try {
-      const res = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}/contents/${SYNC_FILE_PATH}`, { headers: syncHeaders() });
-      if (res.status === 404) {
-        if (opts.manual) showToast("Nothing synced yet \u2014 make a change first");
-        return;
+    if (syncPullPromise) return syncPullPromise;
+    syncPullPromise = (async () => {
+      try {
+        const res = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}/contents/${SYNC_FILE_PATH}`, { headers: syncHeaders() });
+        if (res.status === 404) {
+          if (opts.manual) showToast("Nothing synced yet \u2014 make a change first");
+          return;
+        }
+        if (!res.ok) throw new Error(`GitHub responded ${await githubErrorDetail(res)}`);
+        const data = await res.json();
+        if (data.sha === meta.fileSha && !opts.manual) return; // nothing new
+        const parsed = JSON.parse(base64ToUtf8(data.content));
+        meta.fileSha = data.sha;
+        const result = mergeImportedPayload(parsed);
+        meta.lastSyncAt = Date.now();
+        meta.lastSyncError = null;
+        saveMeta();
+        if (opts.manual) {
+          if (!result) { showToast("That data didn't look like valid Docket data"); return; }
+          showToast(`Synced ${result.addedProjects} project(s), ${result.addedTasks} task(s), ${result.addedMeetings} meeting(s)${result.skipped ? `, ${result.skipped} already present` : ""}`);
+        }
+      } catch (e) {
+        console.error("Docket: sync pull failed —", e);
+        meta.lastSyncError = e.message || "Unknown error";
+        saveMeta();
+        if (opts.manual) showToast("Sync failed — see console for details");
+      } finally {
+        syncPullPromise = null;
       }
-      if (!res.ok) throw new Error(`GitHub responded ${await githubErrorDetail(res)}`);
-      const data = await res.json();
-      if (data.sha === meta.fileSha && !opts.manual) return; // nothing new
-      const parsed = JSON.parse(base64ToUtf8(data.content));
-      meta.fileSha = data.sha;
-      const result = mergeImportedPayload(parsed);
-      meta.lastSyncAt = Date.now();
-      meta.lastSyncError = null;
-      saveMeta();
-      if (opts.manual) {
-        if (!result) { showToast("That data didn't look like valid Docket data"); return; }
-        showToast(`Synced ${result.addedProjects} project(s), ${result.addedTasks} task(s), ${result.addedMeetings} meeting(s)${result.skipped ? `, ${result.skipped} already present` : ""}`);
-      }
-    } catch (e) {
-      console.error("Docket: sync pull failed —", e);
-      meta.lastSyncError = e.message || "Unknown error";
-      saveMeta();
-      if (opts.manual) showToast("Sync failed — see console for details");
-    } finally {
-      syncPullInFlight = false;
-    }
+    })();
+    return syncPullPromise;
   }
 
   async function connectSync(token, repoName) {
