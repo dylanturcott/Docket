@@ -239,16 +239,49 @@
 
   .task-section { margin-bottom: 26px; }
 
-  .dash-cards { display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 12px; padding-bottom: 8px; margin-bottom: 22px; }
+  .dash-row { display: flex; align-items: stretch; gap: 8px; margin-bottom: 10px; }
+  .dash-cards-mask {
+    flex: 1; min-width: 0; overflow: hidden;
+    -webkit-mask-image: linear-gradient(to right, transparent 0, black 18px, black calc(100% - 18px), transparent 100%);
+    mask-image: linear-gradient(to right, transparent 0, black 18px, black calc(100% - 18px), transparent 100%);
+  }
+  .dash-cards { display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 12px; padding: 4px 16px 12px; scroll-behavior: smooth; }
+  .dash-scroll-btn {
+    flex-shrink: 0; width: 30px; border: 1px solid var(--border); background: var(--bg-raised); border-radius: var(--radius-sm);
+    color: var(--faint); display: flex; align-items: center; justify-content: center;
+    transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+  }
+  .dash-scroll-btn svg { width: 14px; height: 14px; }
+  .dash-scroll-btn:hover { background: var(--bg-raised-2); color: var(--text); }
+  .dash-add-btn {
+    flex-shrink: 0; width: 30px; border: 1px dashed var(--border-strong); background: transparent; border-radius: var(--radius-sm);
+    color: var(--faint); font-size: 17px; line-height: 1; display: flex; align-items: center; justify-content: center;
+    transition: color var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+  }
+  .dash-add-btn:hover { color: var(--muted); border-color: var(--muted); }
   .dash-card {
+    position: relative;
     background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 14px; flex: 0 0 220px; cursor: pointer;
-    transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+    transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease), opacity var(--motion-fast) var(--ease);
   }
   .dash-card:hover { background: var(--bg-raised-2); border-color: var(--border-strong); }
-  .dash-card-main { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+  .dash-card.dragging { opacity: .4; }
+  .dash-card.drag-before { box-shadow: inset 3px 0 0 var(--accent-text); }
+  .dash-card.drag-after { box-shadow: inset -3px 0 0 var(--accent-text); }
+  .dash-pin-btn {
+    position: absolute; top: 8px; right: 8px; width: 20px; height: 20px; padding: 4px;
+    background: transparent; border: none; color: var(--faint); opacity: 0;
+    transition: opacity var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+  }
+  .dash-pin-btn svg { width: 100%; height: 100%; }
+  .dash-card:hover .dash-pin-btn { opacity: 1; }
+  .dash-pin-btn:hover { color: var(--danger); }
+  .dash-card-main { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; padding-right: 16px; }
   .dash-card-main .project-icon { width: 17px; height: 17px; color: var(--muted); flex-shrink: 0; }
+  .dash-card-text { min-width: 0; }
   .dash-card-name { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dash-card-subtitle { font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
   .dash-card-links { display: flex; flex-direction: column; gap: 6px; }
   .dash-link-btn {
     display: block; text-align: center; font-size: 12px; font-weight: 600; color: var(--accent-contrast);
@@ -676,6 +709,7 @@
     if (p.icon === undefined) p.icon = null;
     if (p.pinned === undefined) p.pinned = true;
     if (p.links === undefined) p.links = [];
+    if (p.pinOrder === undefined) p.pinOrder = p.createdAt;
     return p;
   }
   function migrateMeeting(m) {
@@ -890,9 +924,13 @@
     showToast(`"${p.name}" restored`);
   }
 
+  function nextPinOrder() {
+    return Math.max(0, ...state.projects.map(p => p.pinOrder || 0)) + 1;
+  }
   function togglePinned(id) {
     const p = projectById(id);
     p.pinned = !p.pinned;
+    if (p.pinned) p.pinOrder = nextPinOrder();
     scheduleSave(); render();
   }
   function addProjectLink(id, label, url) {
@@ -909,7 +947,18 @@
     scheduleSave();
   }
   function pinnedProjects() {
-    return activeProjects().filter(p => p.pinned);
+    return activeProjects().filter(p => p.pinned).sort((a, b) => (a.pinOrder || 0) - (b.pinOrder || 0));
+  }
+  function reorderPinned(draggedId, targetId, insertAfter) {
+    const pinned = pinnedProjects();
+    const dragged = pinned.find(p => p.id === draggedId);
+    if (!dragged || draggedId === targetId) return;
+    const rest = pinned.filter(p => p.id !== draggedId);
+    const targetIdx = rest.findIndex(p => p.id === targetId);
+    const insertAt = insertAfter ? targetIdx + 1 : targetIdx;
+    rest.splice(insertAt, 0, dragged);
+    rest.forEach((p, i) => { p.pinOrder = i; });
+    scheduleSave(); render();
   }
   function projectById(id) { return state.projects.find(p => p.id === id); }
   const STALE_DONE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -922,7 +971,12 @@
 
   function addProject(name, category, icon) {
     const color = PALETTE[state.projects.length % PALETTE.length];
-    const p = { id: uid(), name, category, color, icon: icon || null, archived: false, pinned: true, links: [], courseCode: "", instructorName: "", instructorEmail: "", idName: "", idEmail: "", createdAt: Date.now() };
+    let finalIcon = icon || null;
+    if (!finalIcon) {
+      const iconKeys = Object.keys(ICON_LIBRARY);
+      finalIcon = iconKeys[state.projects.length % iconKeys.length];
+    }
+    const p = { id: uid(), name, category, color, icon: finalIcon, archived: false, pinned: true, pinOrder: nextPinOrder(), links: [], courseCode: "", instructorName: "", instructorEmail: "", idName: "", idEmail: "", createdAt: Date.now() };
     state.projects.push(p);
     ui.selected = p.id;
     scheduleSave(); render();
@@ -1686,12 +1740,22 @@
     `;
   }
 
+  const PIN_ICON = '<svg viewBox="0 0 256 256" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M235.32,81.37,174.63,20.69a16,16,0,0,0-22.63,0L98.37,74.49c-10.66-3.34-35-7.37-60.4,13.14a16,16,0,0,0-1.29,23.78L85,159.71,42.34,202.34a8,8,0,0,0,11.32,11.32L96.29,171l48.29,48.29A16,16,0,0,0,155.9,224c.38,0,.75,0,1.13,0a15.93,15.93,0,0,0,11.64-6.33c19.64-26.1,17.75-47.32,13.19-60L235.33,104A16,16,0,0,0,235.32,81.37Z"/></svg>';
+  const UNPIN_ICON = '<svg viewBox="0 0 256 256" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M53.92,34.62A8,8,0,1,0,42.08,45.38L67.37,73.2A69.82,69.82,0,0,0,38,87.63a16,16,0,0,0-1.29,23.78L85,159.71,42.34,202.34a8,8,0,0,0,11.32,11.32L96.29,171l48.29,48.29A16,16,0,0,0,155.9,224c.38,0,.75,0,1.13,0a15.93,15.93,0,0,0,11.64-6.33,89.75,89.75,0,0,0,11.58-20.27l21.84,24a8,8,0,1,0,11.84-10.76Z"/></svg>';
+  const CARET_LEFT_ICON = '<svg viewBox="0 0 256 256" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z"/></svg>';
+  const CARET_RIGHT_ICON = '<svg viewBox="0 0 256 256" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></svg>';
+
   function dashboardCardHtml(p) {
+    const isCourse = p.category === "collaborative" || p.category === "contracted";
+    const heading = isCourse && p.courseCode
+      ? `<div class="dash-card-name">${escapeHtml(p.courseCode)}</div><div class="dash-card-subtitle">${escapeHtml(p.name)}</div>`
+      : `<div class="dash-card-name">${escapeHtml(p.name)}</div>`;
     return `
-      <div class="dash-card" data-home-card="${p.id}">
+      <div class="dash-card" draggable="true" data-home-card="${p.id}" data-drag-project="${p.id}">
+        <button class="dash-pin-btn" data-unpin="${p.id}" title="Remove from Dashboard" onclick="event.stopPropagation()">${UNPIN_ICON}</button>
         <div class="dash-card-main">
           ${projectIconHtml(p)}
-          <div class="dash-card-name">${escapeHtml(p.name)}</div>
+          <div class="dash-card-text">${heading}</div>
         </div>
         ${p.links.length ? `<div class="dash-card-links">
           ${p.links.map(l => `<a href="${escapeHtml(l.url)}" target="_blank" rel="noopener" class="dash-link-btn" onclick="event.stopPropagation()">${escapeHtml(l.label)}</a>`).join("")}
@@ -1711,9 +1775,23 @@
 
   function bodyHomeHtml() {
     const pinned = pinnedProjects();
-    const cardsHtml = pinned.length
-      ? `<div class="dash-cards">${pinned.map(dashboardCardHtml).join("")}</div>`
-      : `<div class="empty-state-sub" style="padding:4px 2px 20px;">Nothing pinned yet \u2014 pin a project from its "edit" screen to feature it here.</div>`;
+    const unpinned = activeProjects().filter(p => !p.pinned);
+    const addBtn = unpinned.length
+      ? `<button class="dash-add-btn" id="dash-add-btn" title="Add a project to the Dashboard">+</button>`
+      : "";
+    const cardsHtml = pinned.length || unpinned.length
+      ? `<div class="dash-row">
+          <button class="dash-scroll-btn dash-scroll-left" id="dash-scroll-left" aria-label="Scroll left">${CARET_LEFT_ICON}</button>
+          <div class="dash-cards-mask">
+            <div class="dash-cards" id="dash-cards">${pinned.map(dashboardCardHtml).join("")}</div>
+          </div>
+          <button class="dash-scroll-btn dash-scroll-right" id="dash-scroll-right" aria-label="Scroll right">${CARET_RIGHT_ICON}</button>
+          ${addBtn}
+        </div>`
+      : `<div class="empty-state-sub" style="padding:4px 2px 20px;">No projects yet.</div>`;
+    const emptyPinnedHint = (pinned.length === 0 && unpinned.length > 0)
+      ? `<div class="empty-state-sub" style="padding:0 2px 16px;">Nothing pinned \u2014 click the + to feature a project here.</div>`
+      : "";
 
     const projects = activeProjects();
     const anyTasks = state.tasks.some(t => !t.parentId);
@@ -1731,6 +1809,7 @@
 
     return `
       ${cardsHtml}
+      ${emptyPinnedHint}
       <div class="home-dashboard-label">Tasks</div>
       ${quickAdd}
       ${board}
@@ -1932,6 +2011,42 @@
         ui.selected = el.dataset.homeCard; ui.openTaskId = null; mainEl.scrollTop = 0; render();
       });
     });
+    mainInnerEl.querySelectorAll("[data-unpin]").forEach(el => {
+      el.addEventListener("click", e => { e.stopPropagation(); togglePinned(el.dataset.unpin); });
+    });
+    const dashAddBtn = mainInnerEl.querySelector("#dash-add-btn");
+    if (dashAddBtn) dashAddBtn.addEventListener("click", () => openAddToDashboardModal(dashAddBtn));
+    const dashCards = mainInnerEl.querySelector("#dash-cards");
+    const scrollLeftBtn = mainInnerEl.querySelector("#dash-scroll-left");
+    const scrollRightBtn = mainInnerEl.querySelector("#dash-scroll-right");
+    if (dashCards && scrollLeftBtn) scrollLeftBtn.addEventListener("click", () => dashCards.scrollBy({ left: -240, behavior: "smooth" }));
+    if (dashCards && scrollRightBtn) scrollRightBtn.addEventListener("click", () => dashCards.scrollBy({ left: 240, behavior: "smooth" }));
+    if (dashCards) {
+      let draggedId = null;
+      mainInnerEl.querySelectorAll("[data-drag-project]").forEach(card => {
+        card.addEventListener("dragstart", e => {
+          draggedId = card.dataset.dragProject;
+          card.classList.add("dragging");
+          if (e.dataTransfer) { e.dataTransfer.setData("text/plain", draggedId); e.dataTransfer.effectAllowed = "move"; }
+        });
+        card.addEventListener("dragend", () => card.classList.remove("dragging"));
+        card.addEventListener("dragover", e => {
+          e.preventDefault();
+          if (!draggedId || draggedId === card.dataset.dragProject) return;
+          const rect = card.getBoundingClientRect();
+          card.classList.toggle("drag-before", e.clientX < rect.left + rect.width / 2);
+          card.classList.toggle("drag-after", e.clientX >= rect.left + rect.width / 2);
+        });
+        card.addEventListener("dragleave", () => card.classList.remove("drag-before", "drag-after"));
+        card.addEventListener("drop", e => {
+          e.preventDefault();
+          const insertAfter = card.classList.contains("drag-after");
+          card.classList.remove("drag-before", "drag-after");
+          if (draggedId) reorderPinned(draggedId, card.dataset.dragProject, insertAfter);
+          draggedId = null;
+        });
+      });
+    }
     const bannerExport = mainInnerEl.querySelector("[data-banner-export]");
     if (bannerExport) bannerExport.addEventListener("click", exportData);
     const bannerDismiss = mainInnerEl.querySelector("[data-banner-dismiss]");
@@ -2369,6 +2484,30 @@
     };
     showModal(`<div class="modal-backdrop"><div class="modal"></div></div>`, triggerEl);
     render_();
+  }
+
+  function openAddToDashboardModal(triggerEl) {
+    const unpinned = activeProjects().filter(p => !p.pinned);
+    showModal(`
+      <div class="modal-backdrop"><div class="modal">
+        <h3>Add to Dashboard</h3>
+        ${unpinned.length ? `<div class="icon-picker" style="grid-template-columns:1fr;max-height:280px;">
+          ${unpinned.map(p => `
+            <button type="button" class="link-row" data-pick-project="${p.id}" style="width:100%;text-align:left;cursor:pointer;">
+              <span style="display:flex;align-items:center;gap:9px;color:var(--text);">${projectIconHtml(p)}${escapeHtml(p.name)}</span>
+              <span style="color:var(--faint);">${PIN_ICON.replace("<svg ", '<svg style="width:14px;height:14px;" ')}</span>
+            </button>
+          `).join("")}
+        </div>` : `<div class="empty-state-sub">Everything's already pinned.</div>`}
+        <div class="modal-actions">
+          <button id="atd-close">Close</button>
+        </div>
+      </div></div>
+    `, triggerEl);
+    document.getElementById("atd-close").addEventListener("click", closeModal);
+    document.querySelectorAll("[data-pick-project]").forEach(btn => {
+      btn.addEventListener("click", () => { togglePinned(btn.dataset.pickProject); closeModal(); });
+    });
   }
 
   function openArchivedProjectsModal(triggerEl) {
