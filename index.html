@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
 <title>Docket</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -636,14 +637,14 @@
 
   function defaultState() {
     const initiatives = [
-      "AI-assisted interactives workflow",
-      "Canvas HTML skill merge",
-      "Canvas Media Scanner",
-      "VL transition media scanner",
-      "PE Teaching course build"
+      { id: "seed-ai-interactives", name: "AI-assisted interactives workflow" },
+      { id: "seed-canvas-html-skill", name: "Canvas HTML skill merge" },
+      { id: "seed-canvas-media-scanner", name: "Canvas Media Scanner" },
+      { id: "seed-vl-transition-scanner", name: "VL transition media scanner" },
+      { id: "seed-pe-teaching-course", name: "PE Teaching course build" }
     ];
-    const projects = initiatives.map((name, i) => ({
-      id: uid(), name, category: "initiative", color: PALETTE[i % PALETTE.length], archived: false,
+    const projects = initiatives.map((seed, i) => ({
+      id: seed.id, name: seed.name, category: "initiative", color: PALETTE[i % PALETTE.length], archived: false,
       courseCode: "", instructorName: "", instructorEmail: "", idName: "", idEmail: "", createdAt: Date.now() + i
     }));
     return { projects, tasks: [], meetings: [] };
@@ -661,6 +662,7 @@
     if (t.waitingOn === undefined) t.waitingOn = "";
     if (t.dueDate === undefined) t.dueDate = null;
     if (t.tags === undefined) t.tags = [];
+    if (t.completedAt === undefined) t.completedAt = t.status === "done" ? Date.now() : null;
     delete t.flag; delete t.done;
     return t;
   }
@@ -904,7 +906,11 @@
     return activeProjects().filter(p => p.pinned);
   }
   function projectById(id) { return state.projects.find(p => p.id === id); }
-  function tasksFor(projectId) { return state.tasks.filter(t => t.projectId === projectId && !t.parentId); }
+  const STALE_DONE_MS = 30 * 24 * 60 * 60 * 1000;
+  function isStaleDone(t) {
+    return t.status === "done" && t.completedAt && (Date.now() - t.completedAt) > STALE_DONE_MS;
+  }
+  function tasksFor(projectId) { return state.tasks.filter(t => t.projectId === projectId && !t.parentId && !isStaleDone(t)); }
   function subtasksFor(taskId) { return state.tasks.filter(t => t.parentId === taskId); }
   function openCount(projectId) { return state.tasks.filter(t => t.projectId === projectId && !t.parentId && t.status !== "done").length; }
 
@@ -950,13 +956,16 @@
         rowEl.querySelector(".checkbox").classList.add("checked", "pop");
         rowEl.classList.add("completing");
         t.status = "done";
+        t.completedAt = Date.now();
         scheduleSave();
         setTimeout(render, 380);
         return;
       }
       t.status = "done";
+      t.completedAt = Date.now();
     } else {
       t.status = "todo";
+      t.completedAt = null;
     }
     scheduleSave(); render();
   }
@@ -976,6 +985,7 @@
   function setStatus(id, status) {
     const t = state.tasks.find(t => t.id === id);
     t.status = status;
+    t.completedAt = status === "done" ? Date.now() : null;
     scheduleSave(); render();
   }
 
@@ -1000,8 +1010,40 @@
   function deleteProject(id) {
     state.projects = state.projects.filter(p => p.id !== id);
     state.tasks = state.tasks.filter(t => t.projectId !== id);
-    if (ui.selected === id) ui.selected = "everything";
+    if (ui.selected === id) ui.selected = "home";
     scheduleSave(); render();
+  }
+
+  function findDuplicateProjectGroups() {
+    const groups = {};
+    state.projects.forEach(p => {
+      const key = p.category + "::" + p.name.trim().toLowerCase();
+      (groups[key] = groups[key] || []).push(p);
+    });
+    return Object.values(groups).filter(g => g.length > 1);
+  }
+
+  function mergeDuplicateProjects() {
+    const groups = findDuplicateProjectGroups();
+    let mergedProjects = 0, movedTasks = 0;
+    groups.forEach(group => {
+      const sorted = group.slice().sort((a, b) => a.createdAt - b.createdAt);
+      const keeper = sorted[0];
+      const dupes = sorted.slice(1);
+      const dupeIds = new Set(dupes.map(d => d.id));
+      state.tasks.forEach(t => {
+        if (dupeIds.has(t.projectId)) { t.projectId = keeper.id; movedTasks++; }
+      });
+      state.meetings.forEach(m => {
+        m.projectIds = Array.from(new Set(m.projectIds.map(id => dupeIds.has(id) ? keeper.id : id)));
+      });
+      if (!keeper.links) keeper.links = [];
+      dupes.forEach(d => { (d.links || []).forEach(l => keeper.links.push(l)); });
+      state.projects = state.projects.filter(p => !dupeIds.has(p.id));
+      mergedProjects += dupes.length;
+    });
+    if (mergedProjects > 0) { scheduleSave(); render(); }
+    return { groups: groups.length, mergedProjects, movedTasks };
   }
 
   function sortTasks(list) {
@@ -1074,7 +1116,7 @@
   }
   function tasksForTag(tag) {
     const activeIds = new Set(activeProjects().map(p => p.id));
-    return sortTasks(state.tasks.filter(t => !t.parentId && activeIds.has(t.projectId) && (t.tags || []).includes(tag)));
+    return sortTasks(state.tasks.filter(t => !t.parentId && activeIds.has(t.projectId) && (t.tags || []).includes(tag) && !isStaleDone(t)));
   }
 
   // ---------- meetings ----------
@@ -1236,19 +1278,18 @@
     if (syncPushInFlight) { syncPushQueued = true; return; }
     syncPushInFlight = true;
     try {
-      const body = { message: "Docket sync", content: utf8ToBase64(currentPayloadJson()) };
-      if (meta.fileSha) body.sha = meta.fileSha;
-      let res = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}/contents/${SYNC_FILE_PATH}`, {
-        method: "PUT", headers: syncHeaders(), body: JSON.stringify(body)
-      });
-      if (res.status === 409 || res.status === 422) {
+      let res, attempts = 0;
+      while (attempts < 4) {
+        attempts++;
+        const body = { message: "Docket sync", content: utf8ToBase64(currentPayloadJson()) };
+        if (meta.fileSha) body.sha = meta.fileSha;
+        res = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}/contents/${SYNC_FILE_PATH}`, {
+          method: "PUT", headers: syncHeaders(), body: JSON.stringify(body)
+        });
+        if (res.ok) break;
+        if (res.status !== 409 && res.status !== 422) break;
         // Someone else (another open copy) wrote first — pull their changes in, merge, then retry with the fresh sha.
         await syncPull();
-        const retryBody = { message: "Docket sync", content: utf8ToBase64(currentPayloadJson()) };
-        if (meta.fileSha) retryBody.sha = meta.fileSha;
-        res = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}/contents/${SYNC_FILE_PATH}`, {
-          method: "PUT", headers: syncHeaders(), body: JSON.stringify(retryBody)
-        });
       }
       if (!res.ok) throw new Error(`GitHub responded ${res.status}`);
       const data = await res.json();
@@ -1400,6 +1441,7 @@
         <div class="footer-meta">${lastExportLabel}</div>
         <button class="footer-link" data-github-backup>GitHub sync${syncConfigured() ? (meta.lastSyncError ? " (error)" : " \u2713") : ""}</button>
         ${archivedProjects().length ? `<button class="footer-link" data-view-archived>Archived projects (${archivedProjects().length})</button>` : ""}
+        ${findDuplicateProjectGroups().length ? `<button class="footer-link" data-merge-dupes style="color:var(--waiting);">Merge duplicate projects (${findDuplicateProjectGroups().length})</button>` : ""}
         <button class="footer-link danger" data-clearall>Clear all data</button>
       </div>
     `;
@@ -1428,6 +1470,11 @@
     sidebarEl.querySelector("[data-github-backup]").addEventListener("click", (e) => openGithubSyncModal(e.currentTarget));
     const viewArchivedBtn = sidebarEl.querySelector("[data-view-archived]");
     if (viewArchivedBtn) viewArchivedBtn.addEventListener("click", () => openArchivedProjectsModal(viewArchivedBtn));
+    const mergeDupesBtn = sidebarEl.querySelector("[data-merge-dupes]");
+    if (mergeDupesBtn) mergeDupesBtn.addEventListener("click", () => {
+      const result = mergeDuplicateProjects();
+      showToast(`Merged ${result.mergedProjects} duplicate project(s), moved ${result.movedTasks} task(s) \u2014 nothing was deleted`);
+    });
   }
 
   function taskRowHtml(t, opts) {
@@ -2345,7 +2392,7 @@
     `, triggerEl);
     document.getElementById("am-cancel").addEventListener("click", closeModal);
     document.getElementById("am-archive").addEventListener("click", () => {
-      p.archived = true; if (ui.selected === p.id) ui.selected = "everything";
+      p.archived = true; if (ui.selected === p.id) ui.selected = "home";
       scheduleSave(); closeModal(); render();
     });
     document.getElementById("am-delete").addEventListener("click", () => { deleteProject(p.id); closeModal(); });
@@ -2405,7 +2452,7 @@
     document.getElementById("ca-export").addEventListener("click", exportData);
     document.getElementById("ca-confirm").addEventListener("click", () => {
       state = { projects: [], tasks: [], meetings: [] };
-      ui.selected = "everything";
+      ui.selected = "home";
       scheduleSave(); closeModal(); render();
     });
   }
