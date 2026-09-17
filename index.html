@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+ <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -1270,7 +1270,7 @@
   }
 
   async function ensureRepoExists() {
-    const check = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}`, { headers: syncHeaders() });
+    const check = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}`, { headers: syncHeaders(), cache: "no-store" });
     if (check.ok) return true;
     if (check.status !== 404) throw new Error(`Couldn't check repo (${check.status})`);
     const create = await fetch("https://api.github.com/user/repos", {
@@ -1292,7 +1292,7 @@
         const body = { message: "Docket sync", content: utf8ToBase64(currentPayloadJson()) };
         if (meta.fileSha) body.sha = meta.fileSha;
         res = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}/contents/${SYNC_FILE_PATH}`, {
-          method: "PUT", headers: syncHeaders(), body: JSON.stringify(body)
+          method: "PUT", headers: syncHeaders(), body: JSON.stringify(body), cache: "no-store"
         });
         if (res.ok) break;
         if (res.status !== 409 && res.status !== 422) break;
@@ -1322,7 +1322,7 @@
     if (syncPullPromise) return syncPullPromise;
     syncPullPromise = (async () => {
       try {
-        const res = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}/contents/${SYNC_FILE_PATH}`, { headers: syncHeaders() });
+        const res = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}/contents/${SYNC_FILE_PATH}?_=${Date.now()}`, { headers: syncHeaders(), cache: "no-store" });
         if (res.status === 404) {
           if (opts.manual) showToast("Nothing synced yet \u2014 make a change first");
           return;
@@ -1356,7 +1356,7 @@
     meta.syncToken = token.trim();
     meta.repoName = (repoName || "docket-data").trim();
     try {
-      const who = await fetch("https://api.github.com/user", { headers: syncHeaders() });
+      const who = await fetch("https://api.github.com/user", { headers: syncHeaders(), cache: "no-store" });
       if (!who.ok) throw new Error("That token didn't work (couldn't verify your GitHub account)");
       const whoData = await who.json();
       meta.repoOwner = whoData.login;
