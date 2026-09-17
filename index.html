@@ -7,35 +7,35 @@
 <title>Docket</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
-<meta name="theme-color" content="#0f0f13">
+<meta name="theme-color" content="#000000">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
   html, body { margin: 0; padding: 0; width: 100%; height: 100%; }
   :root {
     /* ---- Solid elevation scale (app surfaces) ---- */
-    --bg-app: #0f0f13;      /* sidebar / outermost */
-    --bg-main: #17171d;     /* main content surface */
-    --bg-raised: #1e1e26;   /* inputs, hover, cards */
-    --bg-raised-2: #262631; /* stronger hover / selected */
+    --bg-app: #000000;      /* sidebar / outermost — true black, matches iOS systemBackground (dark) */
+    --bg-main: #0d0d0d;     /* main content surface — barely raised, true neutral */
+    --bg-raised: #1c1c1e;   /* inputs, hover, cards — matches iOS secondarySystemBackground (dark) exactly */
+    --bg-raised-2: #2c2c2e; /* stronger hover / selected — matches iOS tertiarySystemBackground (dark) exactly */
     --border: rgba(255, 255, 255, .08);
     --border-strong: rgba(255, 255, 255, .15);
-    --text: #f2f2f4;
-    --muted: #aeaeb6;
-    --faint: #74747c;
+    --text: #f2f2f2;
+    --muted: #ababab;
+    --faint: #767676;
     --shadow-modal: 0 20px 60px rgba(0, 0, 0, .55);
 
     /* ---- The two places glass is actually earned ---- */
-    --glass-bg: rgba(23, 23, 29, .70);
+    --glass-bg: rgba(20, 20, 20, .70);
     --glass-border: rgba(255, 255, 255, .10);
     --glass-blur: blur(20px) saturate(1.25) brightness(1.05);
-    --modal-bg: rgba(27, 27, 34, .92);
+    --modal-bg: rgba(24, 24, 24, .92);
     --modal-blur: blur(28px) saturate(1.35) brightness(1.06);
     --rim: inset 0 1px 0 rgba(255, 255, 255, .20);
 
     --accent: #0c86b6;
     --accent-text: #5aa9c9;
-    --accent-contrast: #f2f2f4;
+    --accent-contrast: #f2f2f2;
     --accent-soft: rgba(12, 134, 182, .16);
 
     --pri-high: #e17048;
@@ -252,7 +252,7 @@
     gap: 12px; overflow-x: auto; padding: 4px 16px 12px; scroll-behavior: smooth;
   }
   .dash-card {
-    position: relative; display: flex; flex-direction: column; height: 210px;
+    position: relative; display: flex; flex-direction: column; height: 260px;
     background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 14px; cursor: pointer;
     transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease), opacity var(--motion-fast) var(--ease);
@@ -269,8 +269,15 @@
   .dash-pin-btn svg { width: 100%; height: 100%; }
   .dash-card:hover .dash-pin-btn { opacity: 1; }
   .dash-pin-btn:hover { color: var(--danger); }
-  .dash-card-main { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; padding-right: 16px; flex-shrink: 0; }
+  .dash-card-main { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; padding-right: 16px; flex-shrink: 0; }
   .dash-card-main .project-icon { width: 17px; height: 17px; color: var(--muted); flex-shrink: 0; }
+  .project-icon-badge {
+    width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0;
+    background: linear-gradient(180deg, var(--bg-raised-2), var(--bg-raised));
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.06), inset 0 -1px 1px rgba(0,0,0,.25), 0 1px 2px rgba(0,0,0,.3);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .project-icon-badge svg { width: 17px; height: 17px; color: var(--proj-color); }
   .dash-card-text { min-width: 0; }
   .dash-card-name {
     font-size: 13.5px; font-weight: 600; overflow: hidden; white-space: normal;
@@ -280,7 +287,7 @@
     font-size: 11.5px; color: var(--faint); overflow: hidden; white-space: normal; margin-top: 2px;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.25;
   }
-  .dash-card-links { flex: 1; display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow: hidden; }
+  .dash-card-links { flex: 1; display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow-y: auto; }
   .dash-link-btn {
     display: block; text-align: center; font-size: 12px; font-weight: 600; color: var(--accent-text);
     background: var(--accent-soft); border: 1px solid transparent; padding: 6px 10px; border-radius: var(--radius-xs);
@@ -523,7 +530,7 @@
   /* Modal — floats over a dimmed, blurred view of the real app: the other
      place glass is structurally earned. */
   .modal-backdrop {
-    position: fixed; inset: 0; background: rgba(8, 9, 11, 0.6);
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6);
     -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
     display: flex; align-items: center; justify-content: center; z-index: 20;
     transition: opacity 200ms var(--ease);
@@ -564,7 +571,7 @@
   .modal-actions button.danger { color: var(--danger); border-color: var(--danger-soft); }
 
   @media (prefers-reduced-transparency: reduce) {
-    :root { --glass-bg: #1c1c24; --modal-bg: #1c1c24; }
+    :root { --glass-bg: #1c1c1e; --modal-bg: #1c1c1e; }
     .topbar, .modal, .toast { -webkit-backdrop-filter: none; backdrop-filter: none; }
   }
 
@@ -720,6 +727,11 @@
   function projectIconHtml(p) {
     const svg = (p.icon && ICON_LIBRARY[p.icon]) ? ICON_LIBRARY[p.icon] : (CATEGORY_ICONS[p.category] || CATEGORY_ICONS.initiative);
     return `<div class="project-icon">${svg}</div>`;
+  }
+  function projectIconBadgeHtml(p) {
+    const svg = (p.icon && ICON_LIBRARY[p.icon]) ? ICON_LIBRARY[p.icon] : (CATEGORY_ICONS[p.category] || CATEGORY_ICONS.initiative);
+    const color = p.color || PALETTE[0];
+    return `<div class="project-icon-badge" style="--proj-color:${color};">${svg}</div>`;
   }
   function isCourseProject(p) { return p.category === "collaborative" || p.category === "contracted"; }
   function projectShortLabel(p) {
@@ -1840,7 +1852,7 @@
       <div class="dash-card" draggable="true" data-home-card="${p.id}" data-drag-project="${p.id}">
         <button class="dash-pin-btn" data-unpin="${p.id}" title="Remove from Dashboard" onclick="event.stopPropagation()">${PIN_ICON}</button>
         <div class="dash-card-main">
-          ${projectIconHtml(p)}
+          ${projectIconBadgeHtml(p)}
           <div class="dash-card-text">${heading}</div>
         </div>
         <div class="dash-card-links">${linkRows}${ghostRow}</div>
