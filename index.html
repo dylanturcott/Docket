@@ -1254,6 +1254,15 @@
     };
   }
 
+  async function githubErrorDetail(res) {
+    try {
+      const data = await res.json();
+      return data && data.message ? `${res.status}: ${data.message}` : String(res.status);
+    } catch (e) {
+      return String(res.status);
+    }
+  }
+
   function utf8ToBase64(str) { return btoa(unescape(encodeURIComponent(str))); }
   function base64ToUtf8(b64) { return decodeURIComponent(escape(atob(b64.replace(/\n/g, "")))); }
 
@@ -1291,7 +1300,7 @@
         // Someone else (another open copy) wrote first — pull their changes in, merge, then retry with the fresh sha.
         await syncPull();
       }
-      if (!res.ok) throw new Error(`GitHub responded ${res.status}`);
+      if (!res.ok) throw new Error(`GitHub responded ${await githubErrorDetail(res)}`);
       const data = await res.json();
       meta.fileSha = data.content.sha;
       meta.lastSyncAt = Date.now();
@@ -1318,7 +1327,7 @@
         if (opts.manual) showToast("Nothing synced yet \u2014 make a change first");
         return;
       }
-      if (!res.ok) throw new Error(`GitHub responded ${res.status}`);
+      if (!res.ok) throw new Error(`GitHub responded ${await githubErrorDetail(res)}`);
       const data = await res.json();
       if (data.sha === meta.fileSha && !opts.manual) return; // nothing new
       const parsed = JSON.parse(base64ToUtf8(data.content));
