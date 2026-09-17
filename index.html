@@ -805,7 +805,7 @@
       if (!result) throw new Error("storage write returned no result");
       saveFailCount = 0;
       hideSaveWarning();
-      pushGistBackup();
+      syncPush();
     } catch (e) {
       console.error("Docket: save failed —", e);
       saveFailCount++;
@@ -1194,73 +1194,145 @@
     reader.readAsText(file);
   }
 
-  // ---------- GitHub Gist backup ----------
-  const GIST_FILENAME = "docket-backup.json";
-  const GIST_API_VERSION = "2022-11-28";
-  let gistPushInFlight = false;
-  let gistPushQueued = false;
+  // ---------- GitHub sync (private repo, two-way) ----------
+  const SYNC_FILE_PATH = "docket-data.json";
+  const SYNC_API_VERSION = "2022-11-28";
+  const SYNC_POLL_MS = 2 * 60 * 1000;
+  let syncPushInFlight = false;
+  let syncPushQueued = false;
+  let syncPullInFlight = false;
 
-  function gistConfigured() { return !!(meta.gistToken && meta.gistToken.trim()); }
+  function syncConfigured() { return !!(meta.syncToken && meta.repoOwner && meta.repoName); }
 
-  function gistHeaders() {
+  function syncHeaders() {
     return {
       "Accept": "application/vnd.github+json",
-      "Authorization": "Bearer " + meta.gistToken.trim(),
-      "X-GitHub-Api-Version": GIST_API_VERSION
+      "Authorization": "Bearer " + meta.syncToken.trim(),
+      "X-GitHub-Api-Version": SYNC_API_VERSION
     };
   }
 
-  async function pushGistBackup() {
-    if (!gistConfigured()) return;
-    if (gistPushInFlight) { gistPushQueued = true; return; }
-    gistPushInFlight = true;
+  function utf8ToBase64(str) { return btoa(unescape(encodeURIComponent(str))); }
+  function base64ToUtf8(b64) { return decodeURIComponent(escape(atob(b64.replace(/\n/g, "")))); }
+
+  function currentPayloadJson() {
+    return JSON.stringify({ exportedAt: new Date().toISOString(), projects: state.projects, tasks: state.tasks, meetings: state.meetings }, null, 2);
+  }
+
+  async function ensureRepoExists() {
+    const check = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}`, { headers: syncHeaders() });
+    if (check.ok) return true;
+    if (check.status !== 404) throw new Error(`Couldn't check repo (${check.status})`);
+    const create = await fetch("https://api.github.com/user/repos", {
+      method: "POST", headers: syncHeaders(),
+      body: JSON.stringify({ name: meta.repoName, private: true, auto_init: true, description: "Private data store for the Docket app \u2014 not browsable, just JSON." })
+    });
+    if (!create.ok) throw new Error(`Couldn't create repo (${create.status})`);
+    return true;
+  }
+
+  async function syncPush() {
+    if (!syncConfigured()) return;
+    if (syncPushInFlight) { syncPushQueued = true; return; }
+    syncPushInFlight = true;
     try {
-      const payload = { exportedAt: new Date().toISOString(), projects: state.projects, tasks: state.tasks, meetings: state.meetings };
-      const body = JSON.stringify({ files: { [GIST_FILENAME]: { content: JSON.stringify(payload, null, 2) } } });
-      let res;
-      if (meta.gistId) {
-        res = await fetch(`https://api.github.com/gists/${meta.gistId}`, { method: "PATCH", headers: gistHeaders(), body });
-      } else {
-        res = await fetch("https://api.github.com/gists", {
-          method: "POST",
-          headers: gistHeaders(),
-          body: JSON.stringify({ description: "Docket backup (private)", public: false, files: { [GIST_FILENAME]: { content: JSON.stringify(payload, null, 2) } } })
+      const body = { message: "Docket sync", content: utf8ToBase64(currentPayloadJson()) };
+      if (meta.fileSha) body.sha = meta.fileSha;
+      let res = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}/contents/${SYNC_FILE_PATH}`, {
+        method: "PUT", headers: syncHeaders(), body: JSON.stringify(body)
+      });
+      if (res.status === 409 || res.status === 422) {
+        // Someone else (another open copy) wrote first — pull their changes in, merge, then retry with the fresh sha.
+        await syncPull();
+        const retryBody = { message: "Docket sync", content: utf8ToBase64(currentPayloadJson()) };
+        if (meta.fileSha) retryBody.sha = meta.fileSha;
+        res = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}/contents/${SYNC_FILE_PATH}`, {
+          method: "PUT", headers: syncHeaders(), body: JSON.stringify(retryBody)
         });
       }
       if (!res.ok) throw new Error(`GitHub responded ${res.status}`);
       const data = await res.json();
-      if (!meta.gistId) meta.gistId = data.id;
-      meta.lastGistBackupAt = Date.now();
-      meta.lastGistError = null;
+      meta.fileSha = data.content.sha;
+      meta.lastSyncAt = Date.now();
+      meta.lastSyncError = null;
       saveMeta();
     } catch (e) {
-      console.error("Docket: Gist backup failed —", e);
-      meta.lastGistError = e.message || "Unknown error";
+      console.error("Docket: sync push failed —", e);
+      meta.lastSyncError = e.message || "Unknown error";
       saveMeta();
     } finally {
-      gistPushInFlight = false;
-      if (gistPushQueued) { gistPushQueued = false; pushGistBackup(); }
+      syncPushInFlight = false;
+      if (syncPushQueued) { syncPushQueued = false; syncPush(); }
     }
   }
 
-  async function restoreFromGist() {
-    if (!gistConfigured() || !meta.gistId) { showToast("No backup connected yet"); return; }
+  async function syncPull(opts) {
+    opts = opts || {};
+    if (!syncConfigured()) { if (opts.manual) showToast("Not connected yet"); return; }
+    if (syncPullInFlight) return;
+    syncPullInFlight = true;
     try {
-      const res = await fetch(`https://api.github.com/gists/${meta.gistId}`, { headers: gistHeaders() });
+      const res = await fetch(`https://api.github.com/repos/${meta.repoOwner}/${meta.repoName}/contents/${SYNC_FILE_PATH}`, { headers: syncHeaders() });
+      if (res.status === 404) {
+        if (opts.manual) showToast("Nothing synced yet \u2014 make a change first");
+        return;
+      }
       if (!res.ok) throw new Error(`GitHub responded ${res.status}`);
       const data = await res.json();
-      const file = data.files && data.files[GIST_FILENAME];
-      if (!file || !file.content) { showToast("Backup exists but has no content"); return; }
-      const parsed = JSON.parse(file.content);
+      if (data.sha === meta.fileSha && !opts.manual) return; // nothing new
+      const parsed = JSON.parse(base64ToUtf8(data.content));
+      meta.fileSha = data.sha;
       const result = mergeImportedPayload(parsed);
-      if (!result) { showToast("The backup didn't look like valid Docket data"); return; }
-      showToast(`Restored ${result.addedProjects} project(s), ${result.addedTasks} task(s), ${result.addedMeetings} meeting(s)${result.skipped ? `, skipped ${result.skipped} already present` : ""}`);
+      meta.lastSyncAt = Date.now();
+      meta.lastSyncError = null;
+      saveMeta();
+      if (opts.manual) {
+        if (!result) { showToast("That data didn't look like valid Docket data"); return; }
+        showToast(`Synced ${result.addedProjects} project(s), ${result.addedTasks} task(s), ${result.addedMeetings} meeting(s)${result.skipped ? `, ${result.skipped} already present` : ""}`);
+      }
     } catch (e) {
-      console.error("Docket: Gist restore failed —", e);
-      showToast("Restore failed — see console for details");
+      console.error("Docket: sync pull failed —", e);
+      meta.lastSyncError = e.message || "Unknown error";
+      saveMeta();
+      if (opts.manual) showToast("Sync failed — see console for details");
+    } finally {
+      syncPullInFlight = false;
     }
   }
 
+  async function connectSync(token, repoName) {
+    meta.syncToken = token.trim();
+    meta.repoName = (repoName || "docket-data").trim();
+    try {
+      const who = await fetch("https://api.github.com/user", { headers: syncHeaders() });
+      if (!who.ok) throw new Error("That token didn't work (couldn't verify your GitHub account)");
+      const whoData = await who.json();
+      meta.repoOwner = whoData.login;
+      await ensureRepoExists();
+      await syncPull();
+      await syncPush();
+      meta.lastSyncError = null;
+      saveMeta();
+      return true;
+    } catch (e) {
+      console.error("Docket: connecting sync failed —", e);
+      meta.lastSyncError = e.message || "Unknown error";
+      saveMeta();
+      return false;
+    }
+  }
+
+  function disconnectSync() {
+    meta.syncToken = null; meta.repoOwner = null; meta.repoName = null;
+    meta.fileSha = null; meta.lastSyncAt = null; meta.lastSyncError = null;
+    saveMeta();
+  }
+
+  function startSyncPolling() {
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) syncPull(); });
+    window.addEventListener("focus", () => syncPull());
+    setInterval(() => syncPull(), SYNC_POLL_MS);
+  }
 
   function shouldShowReminder() {
     const hasData = state.tasks.length > 0 || state.meetings.length > 0 || state.projects.some(p => p.category !== "initiative");
@@ -1326,7 +1398,7 @@
         <button class="footer-link" data-export>Export data</button>
         <button class="footer-link" data-import>Import data</button>
         <div class="footer-meta">${lastExportLabel}</div>
-        <button class="footer-link" data-github-backup>GitHub backup${gistConfigured() ? (meta.lastGistError ? " (error)" : " \u2713") : ""}</button>
+        <button class="footer-link" data-github-backup>GitHub sync${syncConfigured() ? (meta.lastSyncError ? " (error)" : " \u2713") : ""}</button>
         ${archivedProjects().length ? `<button class="footer-link" data-view-archived>Archived projects (${archivedProjects().length})</button>` : ""}
         <button class="footer-link danger" data-clearall>Clear all data</button>
       </div>
@@ -1353,7 +1425,7 @@
     sidebarEl.querySelector("[data-clearall]").addEventListener("click", (e) => openClearAllModal(e.currentTarget));
     sidebarEl.querySelector("[data-export]").addEventListener("click", exportData);
     sidebarEl.querySelector("[data-import]").addEventListener("click", () => importInput.click());
-    sidebarEl.querySelector("[data-github-backup]").addEventListener("click", (e) => openGithubBackupModal(e.currentTarget));
+    sidebarEl.querySelector("[data-github-backup]").addEventListener("click", (e) => openGithubSyncModal(e.currentTarget));
     const viewArchivedBtn = sidebarEl.querySelector("[data-view-archived]");
     if (viewArchivedBtn) viewArchivedBtn.addEventListener("click", () => openArchivedProjectsModal(viewArchivedBtn));
   }
@@ -2172,55 +2244,56 @@
     return new Date(ts).toLocaleDateString();
   }
 
-  function openGithubBackupModal(triggerEl) {
-    const tokenUrl = "https://github.com/settings/tokens/new?scopes=gist&description=Docket%20backup";
+  function openGithubSyncModal(triggerEl) {
+    const tokenUrl = "https://github.com/settings/tokens/new?scopes=repo&description=Docket%20sync";
     const render_ = () => {
-      const connected = gistConfigured();
+      const connected = syncConfigured();
       const statusLine = !connected
-        ? "Not connected \u2014 backups are off."
-        : meta.lastGistError
-          ? `Connected, but the last attempt failed: ${escapeHtml(meta.lastGistError)}`
-          : meta.lastGistBackupAt
-            ? `Connected \u2014 last backed up ${relativeTimeLabel(meta.lastGistBackupAt)}.`
-            : "Connected \u2014 no backup pushed yet.";
+        ? "Not connected \u2014 sync is off."
+        : meta.lastSyncError
+          ? `Connected, but the last attempt failed: ${escapeHtml(meta.lastSyncError)}`
+          : meta.lastSyncAt
+            ? `Connected to ${escapeHtml(meta.repoOwner)}/${escapeHtml(meta.repoName)} \u2014 last synced ${relativeTimeLabel(meta.lastSyncAt)}.`
+            : `Connected to ${escapeHtml(meta.repoOwner)}/${escapeHtml(meta.repoName)} \u2014 not synced yet.`;
       modalSlot.querySelector(".modal").innerHTML = `
-        <h3>GitHub backup</h3>
-        <p class="hint">Every change is pushed to a private Gist in your GitHub account. <a href="${tokenUrl}" target="_blank" rel="noopener" style="color:var(--accent-text)">Create a token scoped to "gist" only</a>, then paste it below.</p>
+        <h3>GitHub sync</h3>
+        <p class="hint">Every change pushes to a private repository in your GitHub account, and Docket checks it for updates whenever this tab opens, regains focus, or every couple of minutes while open \u2014 so two open copies (like an installed app and a browser tab) stay caught up automatically. <a href="${tokenUrl}" target="_blank" rel="noopener" style="color:var(--accent-text)">Create a token scoped to "repo" only</a>, then paste it below.</p>
         <label>Personal access token</label>
         <input type="password" id="gb-token" placeholder="${connected ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (saved \u2014 paste a new one to replace)" : "ghp_..."}">
-        <p class="hint" style="margin-top:10px;color:${meta.lastGistError && connected ? "var(--danger)" : "var(--faint)"}">${statusLine}</p>
+        <label>Repository name <span style="font-weight:400;color:var(--faint)">(created automatically if it doesn't exist)</span></label>
+        <input type="text" id="gb-repo" value="${connected ? escapeHtml(meta.repoName) : "docket-data"}">
+        <p class="hint" style="margin-top:10px;color:${meta.lastSyncError && connected ? "var(--danger)" : "var(--faint)"}">${statusLine}</p>
         <div class="modal-actions">
           <button id="gb-close">Close</button>
           ${connected ? `<button id="gb-disconnect" class="danger">Disconnect</button>` : ""}
-          ${connected ? `<button id="gb-restore">Restore latest backup</button>` : ""}
-          <button class="primary" id="gb-save">${connected ? "Update token" : "Connect"}</button>
+          ${connected ? `<button id="gb-restore">Sync now</button>` : ""}
+          <button class="primary" id="gb-save">${connected ? "Update" : "Connect"}</button>
         </div>
       `;
       document.getElementById("gb-close").addEventListener("click", closeModal);
-      document.getElementById("gb-save").addEventListener("click", () => {
+      document.getElementById("gb-save").addEventListener("click", async () => {
         const val = document.getElementById("gb-token").value.trim();
-        if (!val) { closeModal(); return; }
-        meta.gistToken = val;
-        meta.lastGistError = null;
-        saveMeta();
-        showToast("Connected \u2014 backing up now\u2026");
-        pushGistBackup().then(render_);
+        const repoVal = document.getElementById("gb-repo").value.trim();
+        if (!val && !connected) return;
+        const saveBtn = document.getElementById("gb-save");
+        saveBtn.textContent = "Connecting\u2026"; saveBtn.disabled = true;
+        const ok = await connectSync(val || meta.syncToken, repoVal);
+        showToast(ok ? "Connected \u2014 syncing now\u2026" : "Couldn't connect \u2014 check the token and try again");
+        renderSidebar();
+        render_();
       });
       const disconnectBtn = document.getElementById("gb-disconnect");
       if (disconnectBtn) disconnectBtn.addEventListener("click", () => {
-        meta.gistToken = null;
-        meta.gistId = null;
-        meta.lastGistError = null;
-        meta.lastGistBackupAt = null;
-        saveMeta();
+        disconnectSync();
         renderSidebar();
         closeModal();
       });
       const restoreBtn = document.getElementById("gb-restore");
       if (restoreBtn) restoreBtn.addEventListener("click", async () => {
-        restoreBtn.textContent = "Restoring\u2026";
+        restoreBtn.textContent = "Syncing\u2026";
         restoreBtn.disabled = true;
-        await restoreFromGist();
+        await syncPush();
+        await syncPull({ manual: true });
         closeModal();
       });
     };
@@ -2338,6 +2411,7 @@
   }
 
   load();
+  startSyncPolling();
 })();
 
 if ("serviceWorker" in navigator) {
