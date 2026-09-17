@@ -718,7 +718,8 @@
 
   let saveTimer = null;
   let saveFailCount = 0;
-  function scheduleSave() { state.updatedAt = Date.now(); clearTimeout(saveTimer); saveTimer = setTimeout(save, 350); }
+  function scheduleSaveOnly() { clearTimeout(saveTimer); saveTimer = setTimeout(save, 350); }
+  function scheduleSave() { state.updatedAt = Date.now(); scheduleSaveOnly(); }
 
   function hasLiveArtifactStorage() {
     return typeof window.storage !== "undefined" && window.storage && typeof window.storage.set === "function" && typeof window.storage.get === "function";
@@ -1275,7 +1276,8 @@
     state.projects = parsed.projects.map(migrateProject);
     state.tasks = parsed.tasks.map(migrateTask);
     state.meetings = (parsed.meetings || []).map(migrateMeeting);
-    scheduleSave();
+    state.updatedAt = parsed.updatedAt || state.updatedAt;
+    scheduleSaveOnly();
     render();
     return true;
   }
