@@ -854,6 +854,10 @@
     }
     await migrateFromLocalStorageIfNeeded();
     try {
+      const mresult = await storageGet(META_KEY).catch(() => null);
+      if (mresult && mresult.value) meta = JSON.parse(mresult.value);
+    } catch (e) { /* use defaults */ }
+    try {
       let result = await storageGet(STORAGE_KEY).catch(() => null);
       if (!result) result = await storageGet(OLD_STORAGE_KEY).catch(() => null);
       state = result && result.value ? JSON.parse(result.value) : defaultState();
@@ -866,10 +870,10 @@
       console.error("Docket: load failed —", e);
       state = defaultState();
     }
-    try {
-      const mresult = await storageGet(META_KEY).catch(() => null);
-      if (mresult && mresult.value) meta = JSON.parse(mresult.value);
-    } catch (e) { /* use defaults */ }
+    if (syncConfigured()) {
+      try { await syncPull(); }
+      catch (e) { console.error("Docket: could not reach GitHub at open, using local data —", e); }
+    }
     render();
     if (usingLocalFallback && idbWorks) {
       showToast("Saving to this browser only (not synced with Claude or other devices)");
@@ -1241,7 +1245,6 @@
   // ---------- GitHub sync (private repo, two-way) ----------
   const SYNC_FILE_PATH = "docket-data.json";
   const SYNC_API_VERSION = "2022-11-28";
-  const SYNC_POLL_MS = 2 * 60 * 1000;
   let syncPushInFlight = false;
   let syncPushQueued = false;
 
@@ -1393,12 +1396,6 @@
     meta.syncToken = null; meta.repoOwner = null; meta.repoName = null;
     meta.fileSha = null; meta.lastSyncAt = null; meta.lastSyncError = null;
     saveMeta();
-  }
-
-  function startSyncPolling() {
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) syncPull(); });
-    window.addEventListener("focus", () => syncPull());
-    setInterval(() => syncPull(), SYNC_POLL_MS);
   }
 
   function shouldShowReminder() {
@@ -2330,7 +2327,7 @@
             : `Connected to ${escapeHtml(meta.repoOwner)}/${escapeHtml(meta.repoName)} \u2014 not synced yet.`;
       modalSlot.querySelector(".modal").innerHTML = `
         <h3>GitHub sync</h3>
-        <p class="hint">Every change pushes to a private repository in your GitHub account, and Docket checks it for updates whenever this tab opens, regains focus, or every couple of minutes while open \u2014 so two open copies (like an installed app and a browser tab) stay caught up automatically. <a href="${tokenUrl}" target="_blank" rel="noopener" style="color:var(--accent-text)">Create a token scoped to "repo" only</a>, then paste it below.</p>
+        <p class="hint">Every change pushes to a private repository in your GitHub account immediately. Each copy checks GitHub for the latest version once, when it's opened, so whichever you open next always starts current, there's no ongoing background syncing while it's sitting open. Use "Sync now" below to check on demand without reopening. <a href="${tokenUrl}" target="_blank" rel="noopener" style="color:var(--accent-text)">Create a token scoped to "repo" only</a>, then paste it below.</p>
         <label>Personal access token</label>
         <input type="password" id="gb-token" placeholder="${connected ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (saved \u2014 paste a new one to replace)" : "ghp_..."}">
         <label>Repository name <span style="font-weight:400;color:var(--faint)">(created automatically if it doesn't exist)</span></label>
@@ -2484,7 +2481,6 @@
   }
 
   load();
-  startSyncPolling();
 })();
 
 if ("serviceWorker" in navigator) {
